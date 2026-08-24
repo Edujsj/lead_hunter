@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { scanMaps } from "@/lib/mapsScanner";
+import { resumirQualidade } from "@/lib/crawler/dataQuality";
 
 // Importação dinâmica do crawler (evita erro em builds sem Playwright)
 let crawlGoogleMaps: ((niche: string, city: string) => Promise<import("@/lib/types").Lead[]>) | null = null;
@@ -58,6 +59,9 @@ export async function POST(req: NextRequest) {
       leads,
       total: leads.length,
       mode,
+      // Qualidade viaja junto com os dados: dá para acompanhar regressão
+      // sem abrir o log do servidor.
+      quality: resumirQualidade(leads),
       scannedAt: new Date().toISOString(),
     });
   } catch (err) {

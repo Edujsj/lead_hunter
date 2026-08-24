@@ -5,9 +5,13 @@
 // daqui é publicável em qualquer hospedagem estática, sem build.
 // ============================================================
 
-import { Lead } from "@/lib/types";
+import { Lead, PreviewBlueprint } from "@/lib/types";
+import type { PreviewSection } from "@/lib/intelligence/buildPreviewBlueprint";
+import { prepararPreview } from "@/lib/intelligence";
 import { DesignKit, buildDesignKit } from "@/lib/design/kit";
 import { kitInputFromLead } from "@/lib/design/seed";
+import { sanitizePhone } from "@/lib/crawler/fieldGuards";
+import { resolveContact } from "@/lib/crawler/whatsappFinder";
 import { businessCardFiles } from "./businessCard";
 import { buildLinkCardFiles } from "./linkCardExport";
 import { escapeHtml, slugify } from "./text";
@@ -34,18 +38,161 @@ const ICONS: Record<string, string> = {
     '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76z"/><path d="m9 12 2 2 4-4"/>',
 };
 
-const ICON_BY_EMOJI: Record<string, string> = {
-  "🏥": "shield", "😊": "badge", "👨‍👩‍👧": "badge", "🔍": "badge", "⚙️": "badge",
-  "📋": "check", "🥗": "badge", "👨‍🍳": "award", "🚗": "zap", "✨": "award",
-  "📅": "check", "🎨": "award", "🏋️": "zap", "👨‍🏫": "award", "🕐": "check",
-  "❤️": "award", "💉": "shield", "🏨": "badge", "🧑‍⚕️": "shield", "🚚": "zap",
-  "💳": "check", "📈": "zap", "⏰": "check", "💰": "award", "👩‍🏫": "award",
-  "👥": "badge", "📚": "badge", "🏆": "award", "⚡": "zap", "💎": "award",
-};
-
 function icon(name: string, size = 20): string {
   const path = ICONS[name] ?? ICONS.badge;
   return `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+}
+
+/**
+ * Uma seção do blueprint em HTML.
+ *
+ * O exportador segue o mesmo plano do preview React — é isso que garante
+ * que o ZIP entregue a mesma página que o vendedor mostrou na tela, sem
+ * depoimento fabricado nem serviço inventado.
+ */
+function renderSecaoExportada(
+  secao: PreviewSection,
+  ctx: { lead: Lead; kit: DesignKit; cityName: string; gallery: string[] }
+): string {
+  const { lead, cityName, gallery } = ctx;
+
+  const cabecalho = (titulo?: string, sub?: string) =>
+    titulo || sub
+      ? `<div class="section-head reveal">
+          ${titulo ? `<h2>${escapeHtml(titulo)}</h2>` : ""}
+          ${sub ? `<p>${escapeHtml(sub)}</p>` : ""}
+        </div>`
+      : "";
+
+  switch (secao.kind) {
+    case "trust":
+      return `<div class="container" style="margin-top:32px">
+    <div class="trust reveal">
+      <div class="item">
+        <span class="score">${lead.rating.toFixed(1)}</span>
+        <span>
+          <small style="display:block">Avaliação no Google</small>
+          ${starRow(lead.rating)}
+          <small style="display:block">${lead.reviewsCount} avaliações</small>
+        </span>
+      </div>
+      <div class="item">${icon("shield")} Empresa verificada no Google Maps</div>
+    </div>
+  </div>`;
+
+    case "services": {
+      const itens = secao.items ?? [];
+      if (itens.length === 0) {
+        // Sem serviço confirmado: declaração de segmento, não lista inventada
+        return `<section>
+    <div class="container">
+      ${cabecalho(secao.title, secao.subtitle)}
+    </div>
+  </section>`;
+      }
+      const corpo = itens
+        .map(
+          (item, i) => `<div class="service reveal">
+          <span class="num">${i + 1}</span>
+          <span class="label">${escapeHtml(item.label)}</span>
+          <span class="chev">${icon("chevron", 16)}</span>
+        </div>`
+        )
+        .join("\n        ");
+      return `<section>
+    <div class="container">
+      ${cabecalho(secao.title, secao.subtitle)}
+      <div class="grid grid-3">
+        ${corpo}
+      </div>
+    </div>
+  </section>`;
+    }
+
+    case "gallery":
+      return gallery.length > 0
+        ? `<section class="band">
+    <div class="container">
+      ${cabecalho(secao.title)}
+      <div class="grid grid-3 gallery">
+        ${gallery
+          .map(
+            (src, i) =>
+              `<a class="reveal" data-hide-on-error href="${escapeHtml(src)}" target="_blank" rel="noopener"><img loading="lazy" src="${escapeHtml(src)}" alt="${escapeHtml(lead.title)} — foto ${i + 1}"></a>`
+          )
+          .join("\n        ")}
+      </div>
+    </div>
+  </section>`
+        : "";
+
+    case "reviews": {
+      const itens = secao.items ?? [];
+      if (itens.length === 0) return "";
+      return `<section>
+    <div class="container">
+      ${cabecalho(secao.title, "Avaliações publicadas no Google")}
+      <div class="grid grid-3">
+        ${itens
+          .map(
+            (item) => `<figure class="card review reveal">
+          <span style="color:var(--brand-text);opacity:.5">${icon("quote", 20)}</span>
+          <blockquote style="color:var(--text);flex:1;margin:0">${escapeHtml(item.label)}</blockquote>
+          ${item.detail ? `<figcaption><small>${escapeHtml(item.detail)}</small></figcaption>` : ""}
+        </figure>`
+          )
+          .join("\n        ")}
+      </div>
+    </div>
+  </section>`;
+    }
+
+    case "about":
+      return `<section class="band">
+    <div class="container" style="max-width:760px">
+      ${cabecalho(secao.title)}
+      <p style="color:var(--text-muted);font-size:1.05rem">${escapeHtml(secao.subtitle ?? "")}</p>
+    </div>
+  </section>`;
+
+    case "process": {
+      const itens = secao.items ?? [];
+      if (itens.length === 0) return "";
+      return `<section>
+    <div class="container">
+      ${cabecalho(secao.title)}
+      <ol class="grid grid-3" style="list-style:none;padding:0">
+        ${itens
+          .map(
+            (item, i) => `<li class="reveal">
+          <span class="num">${i + 1}</span>
+          <h3 style="margin:12px 0 6px">${escapeHtml(item.label)}</h3>
+          ${item.detail ? `<p style="color:var(--text-muted);font-size:.93rem">${escapeHtml(item.detail)}</p>` : ""}
+        </li>`
+          )
+          .join("\n        ")}
+      </ol>
+    </div>
+  </section>`;
+    }
+
+    case "location":
+      return `<section class="band">
+    <div class="container">
+      <div class="trust reveal">
+        <div class="item">${icon("pin")} ${escapeHtml(lead.address)}, ${escapeHtml(cityName)}</div>
+        <a class="btn btn-outline" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+          `${lead.title}, ${lead.address}, ${lead.city}`
+        )}" target="_blank" rel="noopener">Como chegar</a>
+      </div>
+    </div>
+  </section>`;
+
+    // O CTA final é fixo no template, fora do laço
+    case "cta":
+    default:
+      return "";
+  }
 }
 
 function starRow(rating: number): string {
@@ -388,15 +535,31 @@ function brandMarkHtml(lead: Lead, size: number, kit?: DesignKit): string {
   )}px">${escapeHtml(initials)}</span>`;
 }
 
-export function buildHtml(lead: Lead, kit: DesignKit): string {
+export function buildHtml(
+  lead: Lead,
+  kit: DesignKit,
+  blueprint: PreviewBlueprint
+): string {
   const p = kit.palette;
-  const phone = lead.phone.replace(/\D/g, "");
-  const waUrl = `https://wa.me/55${phone}`;
+  const phone = sanitizePhone(lead.phone).replace(/\D/g, "");
+  const temTelefone = phone.length >= 10;
+  // O botão de WhatsApp usa o número publicado especificamente para isso
+  // (pode diferir do telefone geral do Maps, que às vezes é um fixo).
+  const contato = resolveContact(lead);
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+    `${lead.title}, ${lead.address}, ${lead.city}`
+  )}`;
+  // Sem WhatsApp o CTA vira "ver no mapa" — link vazio desmoraliza a demonstração.
+  const waUrl = contato.hasWhatsApp
+    ? `https://wa.me/${contato.digits}`
+    : mapsUrl;
   const cityName = lead.city.split(",")[0].trim();
-  const content = kit.content;
+  // O conteúdo do hero vem do BLUEPRINT, nunca do arquétipo de categoria.
+  // Era aqui que a clínica dermatológica anunciava "Seu sorriso é nossa
+  // especialidade": o texto saía do NICHE_DB, não das evidências do lead.
   const heroPhoto = lead.photos?.[0];
   const gallery = (lead.photos ?? []).slice(1, 7);
-  const description = `${lead.title} — ${lead.category} em ${cityName}. ${content.description}`;
+  const description = `${lead.title} — ${escapeHtml(blueprint.hero.headline)}. ${blueprint.hero.subheadline}`;
 
   const heroLogo = kit.hasRealLogo
     ? `<div class="hero-logo">${brandMarkHtml(lead, kit.logoSizes.hero)}</div>`
@@ -411,20 +574,26 @@ export function buildHtml(lead: Lead, kit: DesignKit): string {
 
   const actions = (onDark: boolean) => `<div class="hero-actions">
         <a class="btn btn-primary" href="${waUrl}" target="_blank" rel="noopener">${icon(
-          "phone"
-        )} Falar no WhatsApp</a>
-        <a class="btn ${onDark ? "btn-ghost" : "btn-outline"}" href="tel:+55${phone}">${escapeHtml(
-          lead.phone
-        )}</a>
+          contato.hasWhatsApp ? "phone" : "pin"
+        )} ${contato.hasWhatsApp ? escapeHtml(blueprint.hero.primaryCTA) : "Ver no mapa"}</a>${
+          temTelefone
+            ? `\n        <a class="btn ${
+                onDark ? "btn-ghost" : "btn-outline"
+              }" href="tel:+55${phone}">${escapeHtml(lead.phone)}</a>`
+            : ""
+        }
       </div>`;
 
   const heroCopy = (onDark: boolean) => `${heroLogo}
       ${ratingBadge(onDark)}
-      <h1>${escapeHtml(content.hero)}</h1>
-      <p class="lead">${escapeHtml(content.description)}</p>
+      <h1>${escapeHtml(blueprint.hero.headline)}</h1>
+      <p class="lead">${escapeHtml(blueprint.hero.subheadline)}</p>
       <div class="hero-meta"${onDark ? ' style="color:rgba(255,255,255,.78)"' : ""}>
-        <span>${icon("pin", 18)} ${escapeHtml(lead.address)}, ${escapeHtml(cityName)}</span>
-        <span>${icon("phone", 18)} ${escapeHtml(lead.phone)}</span>
+        <span>${icon("pin", 18)} ${escapeHtml(lead.address)}, ${escapeHtml(cityName)}</span>${
+          temTelefone
+            ? `\n        <span>${icon("phone", 18)} ${escapeHtml(lead.phone)}</span>`
+            : ""
+        }
       </div>
       ${actions(onDark)}`;
 
@@ -435,14 +604,18 @@ export function buildHtml(lead: Lead, kit: DesignKit): string {
     : `<div class="hero-fallback"></div>`;
 
   let hero: string;
-  if (kit.layout === "split") {
+  // A estrutura do hero é a do BLUEPRINT — o mesmo plano que o preview
+  // React executa. Antes vinha de `kit.layout`, e as duas versões da
+  // mesma empresa podiam divergir.
+  const heroVariant = blueprint.hero.variant;
+  if (heroVariant === "split") {
     hero = `<section class="hero hero-split">
       <div class="panel"><div class="container"><div class="hero-content on-dark">${heroCopy(
         true
       )}</div></div></div>
       <div class="visual">${mediaHtml}</div>
     </section>`;
-  } else if (kit.layout === "editorial") {
+  } else if (heroVariant === "editorial") {
     hero = `<section class="hero hero-editorial">
       <div class="container"><div class="hero-content">${heroCopy(false)}</div></div>
       <div class="container"><div class="frame">${mediaHtml}</div></div>
@@ -454,67 +627,13 @@ export function buildHtml(lead: Lead, kit: DesignKit): string {
     </section>`;
   }
 
-  const services = content.services
-    .map(
-      (service, i) => `<div class="service reveal">
-          <span class="num">${i + 1}</span>
-          <span class="label">${escapeHtml(service)}</span>
-          <span class="chev">${icon("chevron", 16)}</span>
-        </div>`
-    )
-    .join("\n        ");
-
-  const gallerySection =
-    gallery.length > 0
-      ? `<section>
-      <div class="container">
-        <div class="section-head reveal">
-          <span class="section-label">${
-            lead.instagramHandle ? `@${escapeHtml(lead.instagramHandle)}` : "Nosso espaço"
-          }</span>
-          <h2>Conheça a ${escapeHtml(lead.title)}</h2>
-        </div>
-        <div class="grid grid-3 gallery">
-          ${gallery
-            .map(
-              (src, i) =>
-                `<a class="reveal" data-hide-on-error href="${escapeHtml(
-                  src
-                )}" target="_blank" rel="noopener"><img loading="lazy" src="${escapeHtml(
-                  src
-                )}" alt="${escapeHtml(lead.title)} — foto ${i + 1}"></a>`
-            )
-            .join("\n          ")}
-        </div>
-      </div>
-    </section>`
-      : "";
-
-  const differentials = content.differentials
-    .map(
-      (d) => `<div class="card center reveal">
-            <span class="badge">${icon(ICON_BY_EMOJI[d.icon] ?? "badge", 24)}</span>
-            <h3>${escapeHtml(d.title)}</h3>
-            <p>${escapeHtml(d.desc)}</p>
-          </div>`
-    )
-    .join("\n          ");
-
-  const names = ["Ana S.", "Carlos M.", "Paula R."];
-  const times = ["1 semana", "2 semanas", "1 mês"];
-  const testimonials = content.testimonials
-    .map(
-      (text, i) => `<div class="card review reveal">
-            <span style="color:var(--brand-text);opacity:.5">${icon("quote", 20)}</span>
-            <p style="color:var(--text);flex:1">${escapeHtml(text)}</p>
-            <div class="who">
-              <span class="avatar">${names[i][0]}</span>
-              <span><strong>${names[i]}</strong><br><small>há ${times[i]}</small></span>
-              <span style="margin-left:auto;color:var(--accent)">${icon("check", 16)}</span>
-            </div>
-          </div>`
-    )
-    .join("\n          ");
+  // Diferenciais e depoimentos genéricos foram removidos: eram texto
+  // inventado. O corpo da página agora vem do blueprint, que só emite
+  // seção com evidência real por trás.
+  const secoesDoBlueprint = blueprint.sections
+    .map((secao: PreviewSection) => renderSecaoExportada(secao, { lead, kit, cityName, gallery }))
+    .filter(Boolean)
+    .join("\n\n  ");
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -539,71 +658,16 @@ export function buildHtml(lead: Lead, kit: DesignKit): string {
       <span class="name">${escapeHtml(lead.title)}</span>
     </div>
     <a class="btn btn-primary" href="${waUrl}" target="_blank" rel="noopener">${icon(
-      "phone",
+      contato.hasWhatsApp ? "phone" : "pin",
       18
-    )} <span class="full">${escapeHtml(lead.phone)}</span></a>
+    )} <span class="full">${escapeHtml(
+      contato.hasWhatsApp ? lead.phone : "Como chegar"
+    )}</span></a>
   </nav>
 
   ${hero}
 
-  <div class="container" style="margin-top:${kit.layout === "overlay" ? "-44px" : "32px"}">
-    <div class="trust reveal">
-      <div class="item">
-        <span class="score">${lead.rating.toFixed(1)}</span>
-        <span>
-          <small style="display:block">Avaliação no Google</small>
-          ${starRow(lead.rating)}
-          <small style="display:block">${lead.reviewsCount} avaliações verificadas</small>
-        </span>
-      </div>
-      <div class="item">${icon("shield")} Empresa verificada no Google Maps</div>
-      <div class="item">${icon("award")} Referência em ${escapeHtml(
-        lead.category
-      )} em ${escapeHtml(cityName)}</div>
-    </div>
-  </div>
-
-  <section>
-    <div class="container">
-      <div class="section-head reveal">
-        <span class="section-label">O que oferecemos</span>
-        <h2>Nossos Serviços</h2>
-        <p>Soluções completas em ${escapeHtml(
-          lead.category.toLowerCase()
-        )} para atender você e sua família em ${escapeHtml(cityName)}.</p>
-      </div>
-      <div class="grid grid-3">
-        ${services}
-      </div>
-    </div>
-  </section>
-
-  ${gallerySection}
-
-  <section class="band">
-    <div class="container">
-      <div class="section-head reveal">
-        <h2>Por que nos escolher?</h2>
-        <p>Os motivos que fazem de nós a melhor escolha em ${escapeHtml(cityName)}</p>
-      </div>
-      <div class="grid grid-3">
-          ${differentials}
-      </div>
-    </div>
-  </section>
-
-  <section>
-    <div class="container">
-      <div class="section-head reveal">
-        <span class="section-label">Prova social</span>
-        <h2>O que dizem nossos clientes</h2>
-        <p>Baseado nas ${lead.reviewsCount} avaliações reais no Google</p>
-      </div>
-      <div class="grid grid-3">
-          ${testimonials}
-      </div>
-    </div>
-  </section>
+    ${secoesDoBlueprint}
 
   <section class="cta">
     <div class="container reveal">
@@ -613,11 +677,16 @@ export function buildHtml(lead: Lead, kit: DesignKit): string {
         lead.title
       )}</strong> em ${escapeHtml(cityName)}.</p>
       <div class="hero-actions">
-        <a class="btn btn-primary" href="${waUrl}" target="_blank" rel="noopener">Falar no WhatsApp ${icon(
-          "chevron",
-          18
-        )}</a>
-        <a class="btn btn-ghost" href="tel:+55${phone}">${icon("phone", 18)} Ligar Agora</a>
+        <a class="btn btn-primary" href="${waUrl}" target="_blank" rel="noopener">${
+          contato.hasWhatsApp ? escapeHtml(blueprint.hero.primaryCTA) : "Ver no mapa"
+        } ${icon("chevron", 18)}</a>${
+          temTelefone
+            ? `\n        <a class="btn btn-ghost" href="tel:+55${phone}">${icon(
+                "phone",
+                18
+              )} Ligar Agora</a>`
+            : ""
+        }
       </div>
     </div>
   </section>
@@ -629,9 +698,15 @@ export function buildHtml(lead: Lead, kit: DesignKit): string {
         <span>${escapeHtml(lead.title)}</span>
       </div>
       <div class="links">
-        <span>${icon("pin", 16)} ${escapeHtml(lead.address)}, ${escapeHtml(cityName)}</span>
-        <span>${icon("phone", 16)} ${escapeHtml(lead.phone)}</span>
-        <a href="${waUrl}" target="_blank" rel="noopener">WhatsApp</a>${
+        <span>${icon("pin", 16)} ${escapeHtml(lead.address)}, ${escapeHtml(cityName)}</span>${
+          temTelefone
+            ? `\n        <span>${icon("phone", 16)} ${escapeHtml(lead.phone)}</span>`
+            : ""
+        }${
+          contato.hasWhatsApp
+            ? `\n        <a href="${waUrl}" target="_blank" rel="noopener">WhatsApp</a>`
+            : ""
+        }${
           lead.instagramHandle
             ? `\n        <a href="https://instagram.com/${escapeHtml(
                 lead.instagramHandle
@@ -651,10 +726,14 @@ export function buildHtml(lead: Lead, kit: DesignKit): string {
     </div>
   </footer>
 
-  <a class="fab" href="${waUrl}" target="_blank" rel="noopener" aria-label="Chamar no WhatsApp">
+${
+    contato.hasWhatsApp
+      ? `  <a class="fab" href="${waUrl}" target="_blank" rel="noopener" aria-label="Chamar no WhatsApp">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.373 0 0 5.373 0 12c0 2.123.555 4.117 1.527 5.845L.057 23.882l6.2-1.626A11.934 11.934 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818a9.82 9.82 0 01-5.007-1.37l-.36-.214-3.677.964.981-3.585-.235-.369A9.82 9.82 0 012.182 12C2.182 6.578 6.578 2.182 12 2.182S21.818 6.578 21.818 12 17.422 21.818 12 21.818z"/></svg>
     Chamar no WhatsApp
-  </a>
+  </a>`
+      : ""
+  }
 
   <script src="script.js"></script>
 </body>
@@ -670,22 +749,28 @@ export interface StaticSite {
 }
 
 export function buildStaticSite(lead: Lead): StaticSite {
-  const kit = buildDesignKit(kitInputFromLead(lead));
+  // Mesmo blueprint do preview React: o ZIP entrega a página que o
+  // vendedor mostrou, com a direção visual do nicho classificado.
+  const { blueprint } = prepararPreview(lead);
+  const kit = buildDesignKit({
+    ...kitInputFromLead(lead),
+    direction: blueprint.theme.style,
+  });
 
   return {
     slug: slugify(lead.title),
     files: [
-      { name: "index.html", content: buildHtml(lead, kit) },
+      { name: "index.html", content: buildHtml(lead, kit, blueprint) },
       { name: "styles.css", content: buildCss(kit) },
       { name: "script.js", content: buildJs() },
-      { name: "LEIA-ME.txt", content: buildReadme(lead, kit) },
+      { name: "LEIA-ME.txt", content: buildReadme(lead, kit, blueprint) },
       ...buildLinkCardFiles(lead, kit),
       ...businessCardFiles(lead, kit),
     ],
   };
 }
 
-function buildReadme(lead: Lead, kit: DesignKit): string {
+function buildReadme(lead: Lead, kit: DesignKit, blueprint: PreviewBlueprint): string {
   return `Site de ${lead.title}
 ${"=".repeat(`Site de ${lead.title}`.length)}
 
@@ -703,7 +788,7 @@ Para testar no seu computador, é só abrir index.html no navegador.
 SISTEMA DE DESIGN APLICADO
 --------------------------
 Arquétipo ..... ${kit.archetypeLabel} (${kit.mood})
-Layout ........ ${kit.layout}
+Layout ........ ${blueprint.hero.variant}
 Cor primária .. ${kit.palette.primary}
 Cor de acento . ${kit.palette.accent}
 Origem da cor . ${

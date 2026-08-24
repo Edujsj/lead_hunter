@@ -22,6 +22,7 @@ const TABS: Tab[] = [
   { key: "REDIRECTS_TO_WHATSAPP", label: "WhatsApp Direto", emoji: "📱", activeClass: "bg-orange-500/20 text-orange-300 border-orange-500/50" },
   { key: "REDIRECTS_TO_SOCIAL", label: "Só Social", emoji: "📸", activeClass: "bg-yellow-500/20 text-yellow-300 border-yellow-500/50" },
   { key: "SITE_OFFLINE", label: "Offline", emoji: "💀", activeClass: "bg-purple-500/20 text-purple-300 border-purple-500/50" },
+  { key: "SITE_PROTECTED", label: "Protegido", emoji: "🛡️", activeClass: "bg-sky-500/20 text-sky-300 border-sky-500/50" },
   { key: "VALID_SITE", label: "Com Site", emoji: "✅", activeClass: "bg-emerald-500/20 text-emerald-300 border-emerald-500/50" },
 ];
 

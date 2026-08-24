@@ -78,6 +78,31 @@ describe("buildCardLinks", () => {
     expect(decodeURIComponent(maps?.href ?? "")).toContain("Padaria Estrela");
   });
 
+  it("usa o WhatsApp publicado em vez do telefone geral, quando os dois existem e diferem", () => {
+    // Telefone do Maps é fixo; o WhatsApp veio de outro canal (bio, wa.me)
+    const links = buildCardLinks({
+      ...completo,
+      phone: "(19) 3231-4492",
+      whatsappNumber: "(11) 98888-7777",
+    });
+    const wa = links.find((l) => l.kind === "whatsapp");
+    expect(wa?.href).toBe("https://wa.me/5511988887777");
+    expect(wa?.sublabel).toBe("(11) 98888-7777");
+    // "Ligar agora" continua indo para o telefone geral, não o WhatsApp
+    const ligar = links.find((l) => l.kind === "phone");
+    expect(ligar?.href).toBe("tel:+551932314492");
+  });
+
+  it("WhatsApp aparece mesmo sem telefone geral válido, se houver número publicado", () => {
+    const links = buildCardLinks({
+      ...base,
+      phone: "Ver no Google Maps",
+      whatsappNumber: "(19) 99385-4476",
+    });
+    expect(links.map((l) => l.kind)).toContain("whatsapp");
+    expect(links.map((l) => l.kind)).not.toContain("phone");
+  });
+
   it("digitsOnly limpa a máscara do telefone", () => {
     expect(digitsOnly("(19) 99385-4476")).toBe("19993854476");
   });

@@ -4,6 +4,8 @@
 // ============================================================
 
 import { Lead } from "@/lib/types";
+import { sanitizePhone } from "@/lib/crawler/fieldGuards";
+import { resolveContact } from "@/lib/crawler/whatsappFinder";
 
 export type LinkKind =
   | "whatsapp"
@@ -23,7 +25,9 @@ export interface CardLink {
 }
 
 export function digitsOnly(phone: string): string {
-  return phone.replace(/\D/g, "");
+  // Passa pela guarda antes: rótulo de botão gravado como telefone não pode
+  // virar link de WhatsApp.
+  return sanitizePhone(phone).replace(/\D/g, "");
 }
 
 /**
@@ -32,16 +36,23 @@ export function digitsOnly(phone: string): string {
  */
 export function buildCardLinks(lead: Lead): CardLink[] {
   const links: CardLink[] = [];
-  const phone = digitsOnly(lead.phone);
 
-  if (phone.length >= 10) {
+  // O botão de WhatsApp usa o número que a empresa publicou para esse fim
+  // (pode ser diferente do telefone geral, que às vezes é só um fixo).
+  const contato = resolveContact(lead);
+  if (contato.hasWhatsApp) {
+    const numeroExibido = lead.whatsappNumber || lead.phone;
     links.push({
       kind: "whatsapp",
       label: "Chamar no WhatsApp",
-      sublabel: lead.phone,
-      href: `https://wa.me/55${phone}`,
+      sublabel: numeroExibido,
+      href: `https://wa.me/${contato.digits}`,
       primary: true,
     });
+  }
+
+  const phone = digitsOnly(lead.phone);
+  if (phone.length >= 10) {
     links.push({
       kind: "phone",
       label: "Ligar agora",

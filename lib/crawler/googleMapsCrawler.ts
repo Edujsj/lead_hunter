@@ -1,21 +1,31 @@
 // ============================================================
 // CRAWLER REAL — Google Maps via Playwright (Chromium Headless)
-// Extracts business data by clicking each card's detail panel.
+// Coleta a lista de resultados, guarda a URL de cada lugar e visita uma a
+// uma para extrair os detalhes. Todo campo passa pelas guardas de
+// lib/crawler/fieldGuards antes de virar Lead.
 // ============================================================
 
 import { chromium, Browser, Page } from "playwright";
 import { Lead } from "@/lib/types";
 import { analyzeUrl } from "@/lib/urlAnalyzer";
 import {
-  cleanPhone,
   normalizePhone,
-  parseReviewCount,
-  parseRating,
   makeLeadId,
   normalizeCityName,
   extractNeighborhood,
   parseOpeningHours,
 } from "./parseHelpers";
+import {
+  parseRatingFromLabel,
+  parseReviewCountFromLabel,
+  sanitizeAddress,
+  sanitizeCategory,
+  sanitizePhone,
+  splitCardTexts,
+} from "./fieldGuards";
+import { resumirQualidade, formatarResumo } from "./dataQuality";
+import { normalizar } from "@/lib/intelligence/classifyBusiness";
+import { collectWhatsAppCandidates } from "./whatsappFinder";
 
 const CRAWLER_TIMEOUT = Math.min(
   parseInt(process.env.CRAWLER_TIMEOUT ?? "30000", 10),
@@ -67,6 +77,10 @@ interface DetailResult {
   phone: string;
   phoneE164: string | undefined;
   website: string;
+  /** Endereço completo do painel — mais rico que o resumo do card */
+  address: string;
+  /** Bloco de nota do painel, ex. "4,4 (6.220)" */
+  ratingBlock: string;
   photos: string[];
   openingHours: Record<string, string>;
   isOpenNow: boolean | undefined;
@@ -143,20 +157,27 @@ async function extractWebsiteFromDOM(page: Page): Promise<string> {
 }
 
 /**
- * Clicks a business card, waits for the panel to open (URL change),
- * extracts website via DOM scan, phone, photos, hours, status.
- * Falls back to page.goBack() for navigation — more reliable than
- * clicking locale-specific "Back" buttons.
+ * Extrai telefone, site, endereço, nota, fotos e horário do painel do lugar.
+ *
+ * Antes isto clicava no card e voltava com `goBack()`. Era o gargalo: o feed
+ * carrega sob demanda e volta ao topo a cada retorno, então os cards do fim da
+ * lista já não existiam no DOM na hora do clique — o painel abria em 16% das
+ * vezes e telefone, fotos e avaliações caíam juntos. Agora a URL do lugar é
+ * capturada na coleta e navegamos direto para ela: sem clique, sem voltar,
+ * sem depender de o card continuar renderizado.
  */
 async function extractDetailFromPanel(
   page: Page,
   name: string,
-  address: string
+  address: string,
+  placeUrl: string
 ): Promise<DetailResult> {
   const empty: DetailResult = {
     phone: "",
     phoneE164: undefined,
     website: "",
+    address: "",
+    ratingBlock: "",
     photos: [],
     openingHours: {},
     isOpenNow: undefined,
@@ -165,36 +186,20 @@ async function extractDetailFromPanel(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const urlBefore = page.url();
+      if (!placeUrl) throw new Error("card sem URL de lugar");
 
-      const safeNameFull = name.replace(/"/g, '\\"');
-      const safeNameShort = name.slice(0, 30).replace(/"/g, '\\"');
-      
-      const link = page.locator(`a.hfpxzc[aria-label="${safeNameFull}"]`).first();
-      if (await link.count() > 0) {
-        // O locator é tipado como HTMLElement | SVGElement; só o primeiro
-        // tem .click(), e o seletor `a.hfpxzc` sempre casa com uma âncora.
-        await link.evaluate((el) => (el as HTMLElement).click());
-      } else {
-        // Fallback
-        await page
-          .locator(`[role="feed"] [class*="fontHeadlineSmall"]:has-text("${safeNameShort}")`)
-          .first()
-          .click({ timeout: 4000, force: true });
-      }
+      await page.goto(placeUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 20000,
+      });
 
-      // Wait for the panel URL to change (most reliable confirmation of open)
-      try {
-        await page.waitForURL((url) => url.toString() !== urlBefore, {
-          timeout: 5000,
-        });
-      } catch {
-        // URL may not change on inline panel — wait a bit instead
-        await page.waitForTimeout(2000);
-      }
-
-      // Extra wait for async panel content to render
-      await page.waitForTimeout(2500);
+      // O painel monta em duas etapas: título primeiro, blocos de contato depois
+      await page
+        .locator('[role="main"]')
+        .first()
+        .waitFor({ state: "visible", timeout: 8000 })
+        .catch(() => {});
+      await page.waitForTimeout(1800);
 
       // ── Website — full DOM scan ───────────────────────────────────────────
       const website = await extractWebsiteFromDOM(page).catch(() => "");
@@ -222,8 +227,45 @@ async function extractDetailFromPanel(
       const rawPhone = phoneRaw
         ? phoneRaw.replace(/^(Telefone|Phone):\s*/i, "").trim()
         : "";
-      const phone = rawPhone ? cleanPhone(rawPhone) : "";
-      const phoneE164 = rawPhone ? normalizePhone(rawPhone) : undefined;
+      // sanitizePhone recusa rótulo de botão e número implausível; o que não
+      // passa vira string vazia, nunca um texto de fallback.
+      const phone = sanitizePhone(rawPhone);
+      const phoneE164 = phone ? normalizePhone(phone) : undefined;
+
+      // ── Nota e avaliações do painel ───────────────────────────────────────
+      // O card às vezes traz a contagem só como texto sem aria-label, e nessa
+      // variante do DOM ela não vem. O painel mostra sempre: "4,4 (6.220)".
+      const notaBloco = await page
+        .locator('[role="main"] .F7nice, [role="main"] [class*="F7nice"]')
+        .first()
+        .innerText({ timeout: 2500 })
+        .catch(() => "");
+
+      const avaliacoesTexto =
+        notaBloco ||
+        (await page
+          .locator('[role="main"] span')
+          .filter({ hasText: /^\([\d.]+\)$/ })
+          .first()
+          .innerText({ timeout: 1500 })
+          .catch(() => ""));
+
+      // ── Endereço completo do painel ───────────────────────────────────────
+      const enderecoRaw = await page
+        .locator(
+          [
+            '[data-item-id="address"]',
+            '[data-item-id="address"] [aria-label]',
+            'button[aria-label^="Endereço"]',
+            'button[aria-label^="Address"]',
+          ].join(", ")
+        )
+        .first()
+        .getAttribute("aria-label", { timeout: 2500 })
+        .catch(() => null);
+      const enderecoPainel = (enderecoRaw ?? "")
+        .replace(/^(Endereço|Address):\s*/i, "")
+        .trim();
 
       // ── Opening hours ─────────────────────────────────────────────────────
       const hoursRaw = await page
@@ -291,29 +333,18 @@ async function extractDetailFromPanel(
           .slice(0, 6);
       });
 
-      // ── Navigate back to list ─────────────────────────────────────────────
-      // Use browser history back — more reliable than clicking locale-specific
-      // "Voltar"/"Back" buttons whose aria-label varies by Google Maps version
-      try {
-        await page.goBack({ timeout: 4000, waitUntil: "domcontentloaded" });
-        await page.waitForTimeout(800);
-      } catch {
-        await page
-          .locator('[aria-label="Voltar"], [aria-label="Back"]')
-          .first()
-          .click({ timeout: 1500 })
-          .catch(() => {});
-        await page.waitForTimeout(600);
-      }
-
+      // Sem voltar para a lista: a próxima iteração navega direto para a
+      // URL do próximo lugar, capturada na fase de coleta.
       return {
         phone,
         phoneE164,
         website,
+        address: enderecoPainel,
+        ratingBlock: avaliacoesTexto,
         photos,
         openingHours,
         isOpenNow,
-        neighborhood: extractNeighborhood(address),
+        neighborhood: extractNeighborhood(enderecoPainel || address),
       };
     } catch (err) {
       console.log(
@@ -330,15 +361,18 @@ async function extractDetailFromPanel(
 }
 
 // ─── Phase 1: Collect card list ───────────────────────────────────────────────
-async function collectCards(page: Page): Promise<
-  {
-    name: string;
-    rating: string;
-    reviewCount: string;
-    category: string;
-    address: string;
-  }[]
-> {
+interface RawCard {
+  name: string;
+  /** Rótulo cru de acessibilidade — nota e contagem vêm misturadas nele */
+  ratingLabel: string;
+  reviewLabel: string;
+  /** Todos os textos do card; a triagem acontece fora do browser */
+  spans: string[];
+  /** URL do lugar, capturada enquanto o card estava no DOM */
+  placeUrl: string;
+}
+
+async function collectCards(page: Page): Promise<RawCard[]> {
   await page.waitForSelector('[role="feed"]', { timeout: CRAWLER_TIMEOUT });
   await page.waitForTimeout(1500);
 
@@ -352,10 +386,10 @@ async function collectCards(page: Page): Promise<
   const cards = await page.evaluate((max: number) => {
     const results: {
       name: string;
-      rating: string;
-      reviewCount: string;
-      category: string;
-      address: string;
+      ratingLabel: string;
+      reviewLabel: string;
+      spans: string[];
+      placeUrl: string;
     }[] = [];
     const seen = new Set<string>();
 
@@ -370,40 +404,44 @@ async function collectCards(page: Page): Promise<
         nameEl.closest("[jsaction]") ??
         nameEl.parentElement?.parentElement;
 
-      // Rating
+      // O rótulo do Maps traz nota e contagem juntas ("4,5 estrelas 250
+      // avaliações"). Levamos o rótulo inteiro e separamos fora do browser,
+      // onde dá para testar — era aqui que reviewsCount zerava.
       const ratingEl = container?.querySelector(
-        'span[aria-label*="estrela"], span[aria-label*="star"]'
+        'span[aria-label*="estrela"], span[aria-label*="star"], span[role="img"][aria-label]'
       );
-      const ratingText =
-        ratingEl?.getAttribute("aria-label")?.match(/[\d,\.]+/)?.[0] ?? "";
+      const ratingLabel = ratingEl?.getAttribute("aria-label") ?? "";
 
-      // Reviews
-      const reviewEl = container?.querySelector('span[aria-label*="avalia"]');
-      const reviewText =
-        reviewEl?.getAttribute("aria-label")?.replace(/\D/g, "") ?? "0";
+      const reviewEl = container?.querySelector(
+        'span[aria-label*="avalia"], span[aria-label*="review"]'
+      );
+      const reviewLabel = reviewEl?.getAttribute("aria-label") ?? "";
 
-      // Text spans for category and address extraction
+      // O card também mostra a contagem como texto solto "(250)"
+      const reviewTexto =
+        Array.from(container?.querySelectorAll("span") ?? [])
+          .map((s) => (s as HTMLElement).innerText?.trim() ?? "")
+          .find((t) => /^\(\s*[\d.]+\s*\)$/.test(t)) ?? "";
+
+      // Textos soltos do card — a separação entre categoria e endereço
+      // acontece fora daqui, com as guardas de campo
       const spans = Array.from(container?.querySelectorAll("span") ?? [])
-        .map((s) => (s as HTMLElement).innerText?.trim())
-        .filter((t) => t && t.length > 1 && t !== "·")
-        .filter((t) => t !== name)
-        .filter(
-          (t) =>
-            !/^[\d,\.]+([\d,\.]+)?$/.test(t) && !t.includes("avaliações")
-        );
+        .map((s) => (s as HTMLElement).innerText?.trim() ?? "")
+        .filter(Boolean);
 
-      // Category: first short span that looks like a business type
-      const category = spans.find((s) => s.length < 40) ?? "";
-      // Address: a longer span that differs from category
-      const address =
-        spans.find((s) => s.length > 5 && s !== category) ?? "";
+      // O link do lugar é capturado agora, enquanto o card está no DOM.
+      // Depois navegamos direto para ele: sem clique, sem voltar, sem
+      // depender de o card continuar carregado na lista.
+      const placeLink =
+        container?.querySelector<HTMLAnchorElement>('a[href*="/maps/place/"]')?.href ??
+        "";
 
       results.push({
         name,
-        rating: ratingText,
-        reviewCount: reviewText,
-        category,
-        address,
+        ratingLabel,
+        reviewLabel: [reviewLabel, reviewTexto].filter(Boolean).join(" "),
+        spans,
+        placeUrl: placeLink,
       });
       if (results.length >= max) break;
     }
@@ -464,7 +502,13 @@ export async function crawlGoogleMaps(
       const card = cards[i];
       log(`[${i + 1}/${cards.length}] ${card.name}`);
 
-      const detail = await extractDetailFromPanel(page, card.name, card.address);
+      // Categoria e endereço saem dos textos do card pelas guardas de campo
+      const { category, address } = splitCardTexts(card.spans, {
+        name: card.name,
+        fallbackCategory: niche,
+      });
+
+      const detail = await extractDetailFromPanel(page, card.name, address, card.placeUrl);
 
       // Analyze URL with timeout
       let analyzedStatus: Lead["analyzedStatus"] = "NO_SITE";
@@ -483,17 +527,45 @@ export async function crawlGoogleMaps(
         }
       }
 
+      // O painel traz o endereço completo; o card traz a versão curta
+      const enderecoFinal =
+        sanitizeAddress(detail.address, category) || address || cityName;
+
+      // Quando o "site" do Maps é na verdade um link "chamar no WhatsApp"
+      // (é o que gera REDIRECTS_TO_WHATSAPP), o número já está ali dentro
+      // do link — e é o número que o próprio dono configurou para receber
+      // mensagem, o que costuma valer mais que o telefone genérico do card.
+      const whatsapp = collectWhatsAppCandidates({
+        mapsWebsiteLink: detail.website,
+        mapsPhone: detail.phone,
+      })[0];
+
       leads.push({
         id: makeLeadId(card.name, cityName),
         title: card.name,
-        phone: detail.phone || "Ver no Google Maps",
+        phone: detail.phone,
         phoneE164: detail.phoneE164,
-        address: card.address || cityName,
+        whatsappNumber: whatsapp?.number,
+        whatsappE164: whatsapp?.e164,
+        whatsappSource: whatsapp?.source,
+        address: enderecoFinal,
         neighborhood: detail.neighborhood,
         city: cityName,
-        rating: parseRating(card.rating),
-        reviewsCount: parseReviewCount(card.reviewCount),
-        category: card.category || niche,
+        rating:
+          parseRatingFromLabel(card.ratingLabel) ||
+          parseRatingFromLabel(detail.ratingBlock),
+        // O painel é a fonte mais confiável: o card nem sempre publica a
+        // contagem, e quando publica é só como texto solto.
+        reviewsCount:
+          parseReviewCountFromLabel(detail.ratingBlock) ||
+          parseReviewCountFromLabel(`${card.reviewLabel} ${card.ratingLabel}`),
+        category: sanitizeCategory(category, niche),
+        // Contexto de descoberta: a categoria crua do Maps e o termo que o
+        // usuário pesquisou entram separados. A classificação usa os dois
+        // como evidências independentes em vez de adivinhar por uma string.
+        googleCategory: sanitizeCategory(category, "") || undefined,
+        searchedNiche: niche,
+        normalizedCategory: normalizar(sanitizeCategory(category, niche)),
         originalWebsite: detail.website || undefined,
         analyzedStatus,
         analyzedAt: new Date().toISOString(),
@@ -507,6 +579,9 @@ export async function crawlGoogleMaps(
     }
 
     log(`✅ ${leads.length} leads extracted`);
+    // Relatório de qualidade a cada rastreamento — regressão como a do
+    // reviewsCount zerado aparece aqui, não na reclamação do cliente.
+    log(formatarResumo(resumirQualidade(leads)));
     return leads;
   } finally {
     await page.close().catch(() => {});

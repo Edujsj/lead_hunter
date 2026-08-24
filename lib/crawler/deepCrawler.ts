@@ -27,6 +27,8 @@ import {
 } from "./logoFinder";
 import { DesignKit, buildDesignKit } from "@/lib/design/kit";
 import { parseColor } from "@/lib/design/color";
+import { prepararPreview } from "@/lib/intelligence";
+import { collectWhatsAppCandidates } from "./whatsappFinder";
 
 // Legacy shape for backward-compat with DeepCrawlModal while we migrate
 export interface DeepCrawlResult extends DeepResearchPayload {
@@ -112,6 +114,8 @@ interface SiteScrapeResult {
   favicons: string[];
   manifestIcons: string[];
   socialLinks: string[];
+  /** Links "chamar no WhatsApp" publicados no site oficial */
+  whatsappLinks: string[];
   primaryColor?: string;
   secondaryColor?: string;
   typography?: string;
@@ -129,6 +133,7 @@ async function scrapeOfficialSite(
     favicons: [],
     manifestIcons: [],
     socialLinks: [],
+    whatsappLinks: [],
     primaryColor: undefined,
     secondaryColor: undefined,
     typography: undefined,
@@ -146,6 +151,11 @@ async function scrapeOfficialSite(
     url.includes("linktr.ee") ||
     url.includes("beacons.ai")
   ) {
+    // O "site" já é o próprio link de contato — não há página para visitar,
+    // mas se for um link de WhatsApp o número está ali dentro do texto.
+    if (url && (url.includes("wa.me") || url.includes("whatsapp.com"))) {
+      return { ...noSite, whatsappLinks: [url] };
+    }
     return noSite;
   }
 
@@ -184,6 +194,7 @@ async function scrapeOfficialSite(
       favicons: brand.favicons ?? [],
       manifestIcons: brand.manifestIcons ?? [],
       socialLinks: brand.socialLinks ?? [],
+      whatsappLinks: brand.whatsappLinks ?? [],
       primaryColor: brand.primaryColor,
       secondaryColor: brand.secondaryColor,
       typography: brand.typography,
@@ -320,6 +331,35 @@ async function searchDuckDuckGoImages(query: string): Promise<string[]> {
   } catch (err) {
     console.log(`[DeepResearch] DDG Image search failed:`, err);
     return [];
+  }
+}
+
+/**
+ * Texto público da página do Facebook, best-effort.
+ *
+ * Sem login o Facebook devolve pouco, mas o suficiente às vezes traz o
+ * número que a página divulga no "Sobre" ou num link de WhatsApp embutido.
+ * `fetch` puro (sem Playwright) e timeout curto: se falhar, segue sem isso —
+ * mesmo padrão de tolerância a falha do resto do arquivo.
+ */
+async function fetchFacebookPublicText(handle: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(`https://www.facebook.com/${handle}/`, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+      },
+    });
+    if (!res.ok) return "";
+    return await res.text();
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -764,6 +804,27 @@ export async function runDeepCrawl(lead: Lead): Promise<DeepCrawlResult> {
       log("  Nenhum perfil do Instagram encontrado");
     }
 
+    // ── WhatsApp — o canal que a própria empresa publicou para contato ─────
+    // Só lê o que o negócio já tornou público para ser procurado: link no
+    // site, bio do Instagram, texto da página do Facebook. Não tenta achar
+    // o número pessoal do proprietário — isso não é escopo desta função.
+    const facebookText = social.facebook
+      ? await fetchFacebookPublicText(social.facebook)
+      : "";
+    const whatsapp = collectWhatsAppCandidates({
+      mapsWebsiteLink: lead.originalWebsite,
+      websiteTexts: [...siteData.whatsappLinks, ...siteData.siteTexts],
+      instagramBio: instagram?.bio,
+      facebookText,
+      mapsPhone: lead.phone,
+    })[0];
+    if (whatsapp) {
+      log(`  📱 WhatsApp: ${whatsapp.number} (fonte: ${whatsapp.source})`);
+      sourcesVisited.push(`whatsapp:${whatsapp.source}`);
+    } else {
+      log("  Nenhum WhatsApp publicado encontrado além do telefone do Maps");
+    }
+
     // ── STEP 4: Logo da marca ───────────────────────────────────────────────
     log("Step 4/6 — Hunting brand logo...");
     const logo = await resolveBrandLogo(page, lead, siteData, instagram, social);
@@ -864,7 +925,27 @@ export async function runDeepCrawl(lead: Lead): Promise<DeepCrawlResult> {
       confidence = "high";
     }
 
+    // O Deep Crawl deixa de ser um sistema paralelo: o que ele descobriu
+    // do site vira evidência do BusinessProfile, e é o profile que decide
+    // o que o preview pode afirmar.
+    const inteligencia = prepararPreview(
+      { ...lead, originalWebsite: lead.originalWebsite },
+      {
+        deepResearch: {
+          services,
+          websiteTexts: siteData.siteTexts,
+          reviews: webSearch.reviewSnippets,
+          websiteUsed: siteData.siteTexts.length > 0,
+        },
+      }
+    );
+    log(
+      `🧠 Perfil: ${inteligencia.profile.label} (${inteligencia.profile.nodeId}) — confiança ${inteligencia.profile.confidence} [${inteligencia.profile.confidenceBand}], ${inteligencia.profile.confirmedServices.length} serviços confirmados`
+    );
+
     const payload: DeepResearchPayload = {
+      business_profile: inteligencia.profile,
+      preview_blueprint: inteligencia.blueprint,
       brand_identity: {
         logoUrls: logo.candidates.map((c) => c.url),
         bestLogoUrl: logo.best?.url,
@@ -885,6 +966,9 @@ export async function runDeepCrawl(lead: Lead): Promise<DeepCrawlResult> {
         photoLuminance: photoAnalysis.luminance,
         instagramHandle: social.instagram ?? instagram?.handle,
         facebookHandle: social.facebook,
+        whatsappNumber: whatsapp?.number,
+        whatsappE164: whatsapp?.e164,
+        whatsappSource: whatsapp?.source,
         // Normalizado para HEX — o site pode ter declarado rgb(), hsl() ou
         // canais soltos do Tailwind (`--primary: 0 75% 15%`).
         primaryColor: parseColor(siteData.primaryColor) ?? undefined,

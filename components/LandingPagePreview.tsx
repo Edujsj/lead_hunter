@@ -19,8 +19,9 @@ import { buildDesignKit } from "@/lib/design/kit";
 import { buildBusinessCard } from "@/lib/export/businessCard";
 import { buildStaticSite } from "@/lib/export/staticSite";
 import { createZip } from "@/lib/export/zip";
-import { LandingPage } from "@/components/preview/LandingPage";
+import { PreviewRenderer } from "@/components/preview/PreviewRenderer";
 import { LinkCard } from "@/components/preview/LinkCard";
+import { prepararPreview } from "@/lib/intelligence";
 
 interface LandingPagePreviewProps {
   lead: Lead | null;
@@ -49,6 +50,9 @@ export function LandingPagePreview({ lead, onClose }: LandingPagePreviewProps) {
   }, [handleClose, lead]);
 
   const card = useMemo(() => (lead ? buildBusinessCard(lead) : null), [lead]);
+
+  // Modal e página pública consomem exatamente o mesmo blueprint
+  const inteligencia = useMemo(() => (lead ? prepararPreview(lead) : null), [lead]);
 
   const kit = useMemo(
     () =>
@@ -218,11 +222,45 @@ export function LandingPagePreview({ lead, onClose }: LandingPagePreviewProps) {
 
       {/* ── Faixa do sistema de design aplicado ── */}
       <div className="flex items-center gap-4 flex-wrap px-4 py-2 bg-[#161c29] border-b border-slate-800 text-[11px] text-slate-400 shrink-0">
+        {/* O que o sistema entendeu do negócio — o vendedor precisa saber
+            em que evidência a demonstração se apoia antes de mostrá-la */}
         <span className="flex items-center gap-1.5">
           <Palette className="w-3.5 h-3.5 text-violet-400" />
-          <span className="text-slate-300">{kit.archetypeLabel}</span>
-          <span className="text-slate-500">· layout {kit.layout}</span>
+          <span className="text-slate-300">
+            {inteligencia?.profile.label ?? kit.archetypeLabel}
+          </span>
+          {inteligencia?.profile.subNiche && (
+            <span className="text-violet-300">· {inteligencia.profile.subNiche}</span>
+          )}
+          <span className="text-slate-500">
+            · {inteligencia?.blueprint.theme.style ?? kit.layout}
+          </span>
         </span>
+        {inteligencia && (
+          <span
+            className="flex items-center gap-1.5"
+            title={inteligencia.profile.evidence.matched.join(", ")}
+          >
+            <span
+              className={
+                inteligencia.profile.confidenceBand === "alta"
+                  ? "text-emerald-400"
+                  : inteligencia.profile.confidenceBand === "media"
+                    ? "text-amber-400"
+                    : "text-slate-500"
+              }
+            >
+              confiança {inteligencia.profile.confidenceBand} (
+              {inteligencia.profile.confidence.toFixed(2)})
+            </span>
+            <span className="text-slate-500">
+              ·{" "}
+              {inteligencia.profile.confirmedServices.length > 0
+                ? `${inteligencia.profile.confirmedServices.length} serviços confirmados`
+                : "sem serviço confirmado"}
+            </span>
+          </span>
+        )}
         <span className="flex items-center gap-1.5">
           <span
             className="w-3.5 h-3.5 rounded-sm border border-white/20"
@@ -300,9 +338,9 @@ export function LandingPagePreview({ lead, onClose }: LandingPagePreviewProps) {
               </div>
             </div>
           </div>
-        ) : (
-          <LandingPage lead={lead} />
-        )}
+        ) : inteligencia ? (
+          <PreviewRenderer lead={lead} blueprint={inteligencia.blueprint} />
+        ) : null}
       </div>
     </div>
   );

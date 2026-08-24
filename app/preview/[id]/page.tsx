@@ -12,7 +12,8 @@ import { motion } from "framer-motion";
 
 import { Lead } from "@/lib/types";
 import { getLeadSnapshot } from "@/lib/previewStore";
-import { LandingPage } from "@/components/preview/LandingPage";
+import { PreviewRenderer } from "@/components/preview/PreviewRenderer";
+import { prepararPreview } from "@/lib/intelligence";
 
 /** `undefined` = ainda no servidor / hidratando; `null` = link expirado */
 type Snapshot = Lead | null | undefined;
@@ -64,7 +65,7 @@ export default function PreviewPage() {
 
   return (
     <main className="min-h-screen">
-      <LandingPage lead={lead} animated />
+      <PreviewRenderer lead={lead} blueprint={prepararPreview(lead).blueprint} animated />
     </main>
   );
 }

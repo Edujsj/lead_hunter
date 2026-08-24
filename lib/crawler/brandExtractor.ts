@@ -13,6 +13,8 @@ export interface BrandAssets extends SiteAssets {
   typography?: string;
   /** Links de redes sociais achados no site — de onde sai o handle do IG */
   socialLinks: string[];
+  /** Links "chamar no WhatsApp" (wa.me, api.whatsapp.com) publicados no site */
+  whatsappLinks: string[];
 }
 
 export interface LogoSourceSet {
@@ -22,6 +24,7 @@ export interface LogoSourceSet {
   /** href do <link rel="manifest">, já absoluto */
   manifestHref?: string;
   socialLinks: string[];
+  whatsappLinks: string[];
 }
 
 /**
@@ -106,13 +109,19 @@ export async function extractLogoSources(
       ? absolute(manifestEl.getAttribute("href") || "") ?? undefined
       : undefined;
 
-    // Links de redes sociais — o handle do Instagram sai daqui
+    // Links de redes sociais — o handle do Instagram sai daqui. O botão
+    // "chamar no WhatsApp" sai do mesmo laço: é o mesmo tipo de link de
+    // contato que a empresa deixou visível para o visitante clicar.
     const socialLinks: string[] = [];
+    const whatsappLinks: string[] = [];
     document.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((a) => {
       const href = a.getAttribute("href") || "";
       if (/instagram\.com|facebook\.com|tiktok\.com/i.test(href)) {
         const url = absolute(href);
         if (url) socialLinks.push(url);
+      }
+      if (/wa\.me\/|whatsapp\.com\/send/i.test(href)) {
+        whatsappLinks.push(href);
       }
     });
 
@@ -124,6 +133,7 @@ export async function extractLogoSources(
       favicons: dedupe(favicons),
       manifestHref,
       socialLinks: dedupe(socialLinks),
+      whatsappLinks: dedupe(whatsappLinks),
     };
   }, baseUrl);
 
@@ -623,6 +633,7 @@ export async function extractBrandAssets(
     appleTouchIcons: [],
     favicons: [],
     socialLinks: [],
+    whatsappLinks: [],
   };
   const emptyColors: { primaryColor?: string; secondaryColor?: string } = {};
 
@@ -642,6 +653,7 @@ export async function extractBrandAssets(
     favicons: sources.favicons,
     manifestIcons,
     socialLinks: sources.socialLinks,
+    whatsappLinks: sources.whatsappLinks,
     primaryColor: colors.primaryColor,
     secondaryColor: colors.secondaryColor,
     typography,

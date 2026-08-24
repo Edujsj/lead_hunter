@@ -10,6 +10,7 @@
 import { Lead } from "@/lib/types";
 import { DesignKit, buildDesignKit, needsLogoChip } from "@/lib/design/kit";
 import { isLight } from "@/lib/design/color";
+import { sanitizePhone } from "@/lib/crawler/fieldGuards";
 import { kitInputFromLead } from "@/lib/design/seed";
 import { escapeHtml, slugify } from "./text";
 
@@ -230,7 +231,8 @@ export function buildCardBack(lead: Lead, kit: DesignKit): string {
     y += 6.4;
   };
 
-  push("phone", lead.phone);
+  const telefone = sanitizePhone(lead.phone);
+  if (telefone) push("phone", telefone);
 
   rows.push(
     icon("pin", CARD.safe, y - 3.4, 4.2, p.primary),

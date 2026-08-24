@@ -30,6 +30,7 @@ import {
   ShapeStyle,
   resolveArchetype,
 } from "./niches";
+import { resolveDirection } from "./directions";
 
 /** O que a IA (deep crawl) conseguiu descobrir da marca real */
 export interface BrandSeed {
@@ -339,10 +340,29 @@ export interface BuildKitInput {
   title: string;
   category: string;
   brand?: BrandSeed;
+  /**
+   * Direção visual vinda da taxonomia (`blueprint.theme.style`). Quando
+   * presente, decide paleta, tipografia e forma no lugar do arquétipo de
+   * categoria — é o que permite duas clínicas terem visuais distintos.
+   */
+  direction?: string;
 }
 
 export function buildDesignKit(input: BuildKitInput): DesignKit {
-  const archetype = resolveArchetype(input.category);
+  const base = resolveArchetype(input.category);
+  const estilo = resolveDirection(input.direction);
+
+  // A direção sobrescreve só o visual; o conteúdo de fallback do arquétipo
+  // permanece para leads que ainda não passaram pela camada de inteligência.
+  const archetype: NicheArchetype = estilo
+    ? {
+        ...base,
+        palette: estilo.palette,
+        fonts: estilo.fonts,
+        shape: estilo.shape,
+        id: estilo.darkTheme ? "fitness" : base.id,
+      }
+    : base;
   const { palette, source } = resolvePalette(archetype, input.brand);
   const mediaMood = classifyMediaMood(input.brand);
 

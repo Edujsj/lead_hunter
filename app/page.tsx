@@ -75,7 +75,11 @@ export default function HomePage() {
     const medium = leads.filter((l) =>
       ["REDIRECTS_TO_SOCIAL", "SITE_OFFLINE"].includes(l.analyzedStatus)
     ).length;
-    const valid = leads.filter((l) => l.analyzedStatus === "VALID_SITE").length;
+    // Site protegido conta como "tem site": o servidor respondeu, só recusou
+    // o robô. Vendê-lo como oportunidade queima a abordagem.
+    const valid = leads.filter((l) =>
+      ["VALID_SITE", "SITE_PROTECTED"].includes(l.analyzedStatus)
+    ).length;
     return { total: leads.length, hot, medium, valid };
   }, [leads]);
 
@@ -296,6 +300,7 @@ export default function HomePage() {
             brand.logoDominantColor ||
             brand.primaryColor ||
             brand.photoDominantColor ||
+            brand.whatsappNumber ||
             crawledPhotos.length > 0;
           if (!hasBrandData) return;
 
@@ -306,6 +311,10 @@ export default function HomePage() {
               l.id === deepCrawlTarget.id
                 ? {
                     ...l,
+                    // Perfil e blueprint calculados pelo Deep Crawl viajam
+                    // com o lead: o preview não reclassifica ao abrir.
+                    businessProfile: result.business_profile ?? l.businessProfile,
+                    previewBlueprint: result.preview_blueprint ?? l.previewBlueprint,
                     logoUrl: logoUrl ?? l.logoUrl,
                     logoSource: brand.bestLogoSource ?? l.logoSource,
                     logoVectorUrl: brand.logoVectorUrl,
@@ -315,6 +324,14 @@ export default function HomePage() {
                     brandTypography: brand.typography ?? l.brandTypography,
                     instagramHandle: brand.instagramHandle ?? l.instagramHandle,
                     facebookHandle: brand.facebookHandle ?? l.facebookHandle,
+                    // Só sobrescreve se o Deep Crawl achou algo — um lead que
+                    // já tinha WhatsApp do Maps não perde isso por uma
+                    // rodada de Deep Crawl que não encontrou nada novo.
+                    whatsappNumber: brand.whatsappNumber ?? l.whatsappNumber,
+                    whatsappE164: brand.whatsappE164 ?? l.whatsappE164,
+                    whatsappSource: brand.whatsappNumber
+                      ? brand.whatsappSource
+                      : l.whatsappSource,
                     photoLuminance: brand.photoLuminance ?? l.photoLuminance,
                     photos: crawledPhotos.length > 0 ? crawledPhotos : l.photos,
                     brandColors: {

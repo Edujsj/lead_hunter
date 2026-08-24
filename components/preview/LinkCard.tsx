@@ -21,7 +21,7 @@ import {
   LINK_ICON_PATHS,
   buildCardLinks,
 } from "@/lib/design/links";
-import { useGoogleFont } from "./LandingPage";
+import { useGoogleFont } from "./useGoogleFont";
 
 function LinkIcon({ link, size = 22 }: { link: CardLink; size?: number }) {
   const filled = FILLED_ICONS.includes(link.kind);

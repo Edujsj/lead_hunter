@@ -2,12 +2,24 @@
 // MAPS LEAD HUNTER — Tipos Compartilhados
 // ============================================================
 
+// Import de tipo apenas: some na compilação, então o ciclo
+// types ↔ intelligence não existe em runtime.
+import type { BusinessProfile } from "./intelligence/buildBusinessProfile";
+import type { PreviewBlueprint } from "./intelligence/buildPreviewBlueprint";
+
+export type { BusinessProfile, PreviewBlueprint };
+
 export type UrlStatus =
   | "NO_SITE"
   | "REDIRECTS_TO_WHATSAPP"
   | "REDIRECTS_TO_SOCIAL"
   | "SITE_OFFLINE"
   | "WEBSITE_BROKEN"
+  /**
+   * Servidor no ar, mas recusando robô (403/429). NÃO é oportunidade:
+   * abordar esse lead dizendo que o site caiu queima a credibilidade.
+   */
+  | "SITE_PROTECTED"
   | "VALID_SITE";
 
 export interface UrlAnalysisResult {
@@ -72,6 +84,30 @@ export interface Lead {
   instagramHandle?: string;
   /** Slug da página no Facebook */
   facebookHandle?: string;
+  /**
+   * Número de WhatsApp que a empresa publicou especificamente para contato
+   * (link wa.me do Maps, botão do site, bio do Instagram/Facebook) — pode
+   * ser diferente do `phone` geral quando esse é uma linha fixa sem WhatsApp.
+   * Ver lib/crawler/whatsappFinder.ts.
+   */
+  whatsappNumber?: string;
+  whatsappE164?: string;
+  /** De onde veio o número — transparência para quem vai abordar o lead */
+  whatsappSource?: string;
+
+  // ── Contexto de descoberta ────────────────────────────────────────────────
+  /** Termo que o usuário pesquisou — desempata categoria ambígua do Maps */
+  searchedNiche?: string;
+  /** Categoria crua atribuída pelo Google Maps */
+  googleCategory?: string;
+  /** Categoria normalizada (minúscula, sem acento) para comparação */
+  normalizedCategory?: string;
+
+  // ── Inteligência (calculada, cacheável) ───────────────────────────────────
+  /** Quem é este negócio, segundo as evidências */
+  businessProfile?: BusinessProfile;
+  /** Plano da página derivado do perfil */
+  previewBlueprint?: PreviewBlueprint;
 }
 
 export type FilterType =
@@ -81,6 +117,7 @@ export type FilterType =
   | "REDIRECTS_TO_SOCIAL"
   | "SITE_OFFLINE"
   | "WEBSITE_BROKEN"
+  | "SITE_PROTECTED"
   | "VALID_SITE";
 
 export interface ScanRequest {
@@ -139,6 +176,10 @@ export interface BrandIdentity {
   instagramHandle?: string;
   /** Slug da página do Facebook encontrada */
   facebookHandle?: string;
+  /** Número de WhatsApp publicado pela empresa (não o telefone genérico) */
+  whatsappNumber?: string;
+  whatsappE164?: string;
+  whatsappSource?: string;
   /** SVG (data URI) gerado a partir de um logo bitmap pequeno */
   logoVectorUrl?: string;
   /** O arquivo do logo tem fundo transparente */
@@ -200,6 +241,10 @@ export interface OperationalDetails {
 
 export interface DeepResearchPayload {
   brand_identity: BrandIdentity;
+  /** Quem é este negócio, segundo as evidências coletadas */
+  business_profile?: BusinessProfile;
+  /** Plano da página derivado do perfil */
+  preview_blueprint?: PreviewBlueprint;
   /** Sistema visual derivado da marca + nicho (lib/design/kit.ts) */
   design_brief: DesignBrief;
   gallery: GallerySection;

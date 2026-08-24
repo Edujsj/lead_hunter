@@ -12,6 +12,7 @@ import {
   slugify,
 } from "../lib/export/staticSite";
 import { buildDesignKit } from "../lib/design/kit";
+import { prepararPreview } from "../lib/intelligence";
 import type { Lead } from "../lib/types";
 
 const lead: Lead = {
@@ -124,6 +125,26 @@ describe("buildStaticSite", () => {
     expect(html).toContain("tel:+5519999991234");
   });
 
+  it("o botão de WhatsApp usa o número publicado, não o telefone geral", () => {
+    // Telefone do Maps é um fixo; o WhatsApp real veio de outro canal
+    const html = buildStaticSite({
+      ...lead,
+      phone: "(19) 3231-4492",
+      whatsappNumber: "(11) 98888-7777",
+    }).files[0].content;
+
+    expect(html).toContain("https://wa.me/5511988887777");
+    expect(html).not.toContain("wa.me/551932314492");
+    // "Ligar" continua usando o telefone geral
+    expect(html).toContain("tel:+551932314492");
+  });
+
+  it("sem WhatsApp publicado nem telefone geral, o CTA cai para o mapa", () => {
+    const html = buildStaticSite({ ...lead, phone: "Ver no Google Maps" }).files[0].content;
+    expect(html).toContain("Ver no mapa");
+    expect(html).not.toContain("wa.me/55");
+  });
+
   it("usa o logo real quando existe e o lockup quando não existe", () => {
     const comLogo = buildStaticSite(leadComMarca).files[0].content;
     expect(comLogo).toContain('src="https://cdn.exemplo.com/logo.png"');
@@ -134,23 +155,60 @@ describe("buildStaticSite", () => {
     expect(semLogo).toContain(">CS<");
   });
 
-  it("monta a galeria a partir da segunda foto em diante", () => {
-    const html = buildStaticSite(leadComMarca).files[0].content;
-    expect(html).toContain("@clinicasaolucas");
+  it("nicho visual ganha galeria com as fotos reais", () => {
+    // Salão vive de mostrar o trabalho; o fluxo dele abre com a galeria
+    const salao: Lead = {
+      ...leadComMarca,
+      title: "Studio W Cabeleireiros",
+      category: "Salão de beleza",
+      googleCategory: "Salão de beleza",
+    };
+    const html = buildStaticSite(salao).files[0].content;
     expect(html).toContain("foto2.jpg");
     expect(html).toContain("foto3.jpg");
-    // a primeira foto é o hero, não repete na galeria
-    expect(html.match(/foto1\.jpg/g)?.length).toBe(1);
+  });
+
+  it("clínica médica não abre com galeria — o fluxo do nicho é outro", () => {
+    // Diferenciação por nicho: aqui a ordem é reputação, especialidades,
+    // sobre, localização. Foto entra no hero, não como vitrine.
+    const html = buildStaticSite(leadComMarca).files[0].content;
+    expect(html).not.toContain("foto3.jpg");
   });
 
   it("omite a galeria quando não há fotos", () => {
-    const html = buildStaticSite(lead).files[0].content;
-    expect(html).not.toContain("Conheça a");
+    const html = buildStaticSite({ ...lead, category: "Salão de beleza" }).files[0].content;
+    expect(html).not.toContain("gallery");
   });
 
   it("não usa emoji como ícone", () => {
     const html = buildStaticSite(leadComMarca).files[0].content;
     expect(html).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
+  });
+
+  it("o hero do HTML exportado vem do blueprint, não do arquétipo de categoria", () => {
+    // Regressão real: a dermatologista recebia "Seu sorriso é nossa
+    // especialidade" porque o hero do exportador lia o NICHE_DB antigo.
+    const derma: Lead = {
+      ...lead,
+      title: "Clínica Dermatológica Dra. Ana Silva",
+      category: "Clínica médica",
+      googleCategory: "Clínica médica",
+      searchedNiche: "clínicas médicas",
+    };
+    const html = buildStaticSite(derma).files[0].content.toLowerCase();
+
+    for (const proibido of ["sorriso", "odontológico", "clareamento", "ortodontia"]) {
+      expect.soft(html, proibido).not.toContain(proibido);
+    }
+    expect(html).toContain("dermatologia");
+  });
+
+  it("o CTA do HTML exportado é o do nicho", () => {
+    const oficina: Lead = { ...lead, category: "Oficina mecânica", googleCategory: "Oficina mecânica" };
+    expect(buildStaticSite(oficina).files[0].content).toContain("Solicitar orçamento");
+
+    const restaurante: Lead = { ...lead, category: "Restaurante", googleCategory: "Restaurante" };
+    expect(buildStaticSite(restaurante).files[0].content).toContain("Ver cardápio");
   });
 
   it("escapa conteúdo vindo do lead", () => {
@@ -205,7 +263,9 @@ describe("adaptação ao acervo de imagens", () => {
     expect(kit.mediaMood).toBe("light");
     expect(kit.layout).toBe("editorial");
     // Foto clara precisa de véu mais forte para o texto sobreviver
-    expect(buildHtml({ ...lead, photos: ["x.jpg"] }, kit)).toContain("hero-media");
+    const comFoto = { ...lead, photos: ["x.jpg"] };
+    const { blueprint } = prepararPreview(comFoto);
+    expect(buildHtml(comFoto, kit, blueprint)).toContain("hero-media");
   });
 
   it("sem foto, o layout continua sendo o do hash", () => {

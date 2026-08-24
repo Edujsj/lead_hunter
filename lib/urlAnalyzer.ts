@@ -26,6 +26,12 @@ const SOCIAL_PATTERNS = [
   /msha\.ke\//i,
 ];
 
+/**
+ * Códigos que significam "o servidor me viu e me recusou", não "o site sumiu".
+ * 401 fica de fora: área logada exposta na raiz é problema real do site.
+ */
+const BLOQUEIO_DE_ROBO = new Set([403, 429, 999]);
+
 function isWhatsAppUrl(url: string): boolean {
   return WHATSAPP_PATTERNS.some((p) => p.test(url));
 }
@@ -152,7 +158,18 @@ export async function analyzeUrl(
       };
     }
 
-    // ── HTTP error codes → SITE_OFFLINE ─────────────────────────────────────
+    // ── Bloqueio de robô ≠ site fora do ar ──────────────────────────────────
+    // 403/429 (e o 999 do LinkedIn) vêm de WAF/anti-bot com o site no ar para
+    // o cliente. Tratar como oportunidade gera abordagem falsa.
+    if (BLOQUEIO_DE_ROBO.has(response.status)) {
+      return {
+        status: "SITE_PROTECTED",
+        finalUrl,
+        statusCode: response.status,
+      };
+    }
+
+    // ── Demais erros HTTP → SITE_OFFLINE ────────────────────────────────────
     if (response.status >= 400) {
       return {
         status: "SITE_OFFLINE",

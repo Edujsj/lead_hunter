@@ -46,6 +46,13 @@ const CONFIG: Record<UrlStatus, BadgeConfig> = {
     dot: "bg-slate-500",
     emoji: "🚫",
   },
+  SITE_PROTECTED: {
+    label: "Site Protegido",
+    bg: "bg-sky-500/15 border border-sky-500/30",
+    text: "text-sky-400",
+    dot: "bg-sky-500",
+    emoji: "🛡️",
+  },
   VALID_SITE: {
     label: "Com Site",
     bg: "bg-emerald-500/15 border border-emerald-500/30",
@@ -74,7 +81,9 @@ export function statusPriority(status: UrlStatus): number {
     REDIRECTS_TO_SOCIAL: 2,
     SITE_OFFLINE: 3,
     WEBSITE_BROKEN: 4,
-    VALID_SITE: 5,
+    // Site no ar que só bloqueia robô não é oportunidade — vai para o fim
+    SITE_PROTECTED: 5,
+    VALID_SITE: 6,
   };
   return order[status];
 }
